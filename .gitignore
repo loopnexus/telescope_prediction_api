@@ -1,0 +1,6 @@
+venv_telescope_prediction_api/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
