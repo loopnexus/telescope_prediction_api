@@ -1,32 +1,43 @@
-import runpod
-import time  
+import os
+import glob
+from ultralytics import YOLO
+import base64
+import cv2
+import numpy as np
+
+# Load all YOLO models from weights/
+MODEL_DIR = "weights"
+models = {
+    os.path.splitext(os.path.basename(w))[0]: YOLO(w)
+    for w in glob.glob(os.path.join(MODEL_DIR, "*.pt"))
+}
+
+def decode_image(base64_str):
+    image_data = base64.b64decode(base64_str)
+    np_arr = np.frombuffer(image_data, np.uint8)
+    return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
 def handler(event):
-    """
-    This function processes incoming requests to your Serverless endpoint.
-    
-    Args:
-        event (dict): Contains the input data and request metadata
-        
-    Returns:
-        Any: The result to be returned to the client
-    """
-    
-    # Extract input data
-    print(f"Worker Start")
-    input = event['input']
-    
-    prompt = input.get('prompt')  
-    seconds = input.get('seconds', 0)  
+    input_data = event["input"]
+    img_b64 = input_data.get("image_base64")
 
-    print(f"Received prompt: {prompt}")
-    print(f"Sleeping for {seconds} seconds...")
-    
-    # You can replace this sleep call with your Python function to generate images, text, or run any machine learning workload
-    time.sleep(seconds)  
-    
-    return prompt 
+    if not img_b64:
+        return {"error": "Missing image_base64 input."}
 
-# Start the Serverless function when the script is run
-if __name__ == '__main__':
-    runpod.serverless.start({'handler': handler })
+    image = decode_image(img_b64)
+    results = {}
+
+    for name, model in models.items():
+        prediction = model.predict(image, task="segment")[0]
+        detections = []
+
+        for mask, box, cls in zip(prediction.masks.data, prediction.boxes.xyxy, prediction.boxes.cls):
+            detections.append({
+                "class": int(cls),
+                "bbox": box.tolist(),
+                "mask": mask.cpu().numpy().tolist()
+            })
+
+        results[name] = detections
+
+    return {"predictions": results}

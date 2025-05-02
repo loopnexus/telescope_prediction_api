@@ -1,12 +1,11 @@
 FROM python:3.10-slim
 
-WORKDIR /
+WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir runpod
+COPY requirements.txt .
+RUN apt-get update && apt-get install -y libgl1 libglib2.0-0 && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy your handler file
-COPY rp_handler.py /
+COPY . .
 
-# Start the container
 CMD ["python3", "-u", "rp_handler.py"]
