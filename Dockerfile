@@ -1,15 +1,14 @@
+# 1. use slim Python
 FROM python:3.10-slim
 
 WORKDIR /app
 
-# install only what we need
+# 2. install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# drop in handler + model
+# 3. copy handler
 COPY rp_handler.py .
-# make sure you have downloaded yolov8n-seg.pt into this folder
-COPY yolov8n-seg.pt .
 
-# tell RunPod to invoke rp_handler.handler
+# 4. tell RunPod which function to invoke
 CMD ["rp_handler.handler"]
