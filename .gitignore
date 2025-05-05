@@ -8,6 +8,7 @@ __pycache__/
 # ignore local test‐data and results
 predictions/
 test_data/
+output/
 
 # ignore local weights and test scripts
 yolov8n-seg.pt

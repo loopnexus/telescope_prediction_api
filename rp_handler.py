@@ -1,11 +1,13 @@
-import base64
-import io
 import os
 import sys
+import io
+import uuid
+import base64
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+import cv2
+from PIL import Image
 from ultralytics import YOLO
 
 # ─── locate your weights ─────────────────────────────────────────────────────
@@ -17,98 +19,94 @@ weight_files = sorted(WEIGHTS_DIR.glob("*.pt"))
 if not weight_files:
     raise RuntimeError(f"No .pt weights found in {WEIGHTS_DIR}")
 
-# Load a YOLO model for each weight file, assign a unique color
-MODELS = []
-# A simple palette of RGBA colors (semi-transparent)
-PALETTE = [
-    (255, 0, 0, 100),    # red
-    (0, 255, 0, 100),    # green
-    (0, 0, 255, 100),    # blue
-    (255, 255, 0, 100),  # yellow
-    (255, 0, 255, 100),  # magenta
-    (0, 255, 255, 100),  # cyan
-]
-for idx, wfile in enumerate(weight_files):
-    color = PALETTE[idx % len(PALETTE)]
+# Load a YOLO model for each weight file
+each_model = []
+for wfile in weight_files:
+    model_name = wfile.stem
     print(f"🔔 Loading YOLO weights from: {wfile}", file=sys.stderr, flush=True)
-    MODELS.append((wfile.stem, YOLO(str(wfile)), color))
+    each_model.append((model_name, YOLO(str(wfile))))
 
-# load default font
-try:
-    FONT = ImageFont.load_default()
-except Exception:
-    FONT = None
+# Optionally allow external override of structure type
+def _get_structure_type():
+    try:
+        return int(os.environ.get("STRUCTURE_TYPE", 1))
+    except ValueError:
+        return 1
 
 
-def handler(event: dict) -> dict:
+def handler(event: dict):
     """
     RunPod entrypoint.
-    In:  {"input": {"image_base64": "..."}}
-    Out: {"output": {"annotated_base64": "..."}}
+    In:  {"input": {"image_base64": "...", "image_name": "..."}}
+    Out: JSON array matching schema
     """
     inp = event.get("input", {})
     b64 = inp.get("image_base64")
+    image_name = inp.get("image_name", "")
     if not b64:
         return {"error": "No image_base64 provided"}
 
-    # decode and open as PIL
+    # decode and load image
     img_bytes = base64.b64decode(b64)
     pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     arr = np.array(pil)
 
-    # Prepare overlay canvas
-    overlay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    records = []
+    struct_type = _get_structure_type()
 
-    # Iterate over each model and its color
-    for name, model, color in MODELS:
-        results = model.predict(
-            source=arr,
-            conf=0.4,
-            save=False,
-            verbose=False
-        )
+    # run each model
+    for model_name, model in each_model:
+        results = model.predict(source=arr, conf=0.4, save=False, verbose=False)
         res = results[0]
 
-        # masks
-        if res.masks:
-            for mask in res.masks.data:
-                mask_np = (mask.cpu().numpy() * 255).astype("uint8")
-                mask_img = Image.fromarray(mask_np, mode="L").resize(pil.size)
-                colored = Image.new("RGBA", pil.size, color)
-                overlay = Image.composite(colored, overlay, mask_img)
+        # iterate detections
+        for i, box in enumerate(res.boxes.xyxy):
+            # parse bbox
+            x1, y1, x2, y2 = map(int, box.cpu().numpy())
+            bbox = [x1, y1, x2, y2]
 
-        # boxes + labels
-        if res.boxes:
-            for i, bbox in enumerate(res.boxes.xyxy):
-                x1, y1, x2, y2 = map(int, bbox.cpu().numpy())
-                # draw box
-                draw.rectangle([x1, y1, x2, y2], outline=color[:3], width=2)
-                cls = int(res.boxes.cls[i].cpu().numpy())
-                conf = float(res.boxes.conf[i].cpu().numpy())
-                label = f"{name}:{model.names[cls]} {conf:.2f}"
+            # extract class and confidence
+            cls_id = int(res.boxes.cls[i].cpu().numpy())
+            class_name = model.names[cls_id]
+            conf = float(res.boxes.conf[i].cpu().numpy())
 
-                # measure text size
-                if FONT:
-                    try:
-                        text_size = FONT.getsize(label)
-                    except Exception:
-                        bbox0 = draw.textbbox((0, 0), label, font=FONT)
-                        text_size = (bbox0[2] - bbox0[0], bbox0[3] - bbox0[1])
-                else:
-                    text_size = (len(label) * 6, 11)
+            # split into type/orientation/mod
+            parts = class_name.split("_")
+            eq_type = parts[0] if len(parts) > 0 else ""
+            orientation = parts[1] if len(parts) > 1 else ""
+            try:
+                eq_modification = int(parts[2]) if len(parts) > 2 else None
+            except ValueError:
+                eq_modification = None
 
-                # text background
-                bg = [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1]
-                draw.rectangle(bg, fill=color[:3] + (200,))
-                draw.text((x1 + 2, y1 - text_size[1] - 2), label, fill=(255,255,255,255), font=FONT)
+            # build polygon via contour of mask if available
+            polygon = []
+            if res.masks and i < len(res.masks.data):
+                mask_np = (res.masks.data[i].cpu().numpy() * 255).astype(np.uint8)
+                # threshold
+                _, thresh = cv2.threshold(mask_np, 127, 255, cv2.THRESH_BINARY)
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    # take largest
+                    contour = max(contours, key=lambda c: cv2.contourArea(c))
+                    polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in contour]
 
-    # Composite overlay onto original
-    annotated = Image.alpha_composite(pil.convert("RGBA"), overlay)
+            record = {
+                "prediction_id": str(uuid.uuid4()),
+                "ml_model_name": model_name,
+                "class_name": class_name,
+                "confidence": conf,
+                "eq_type": eq_type,
+                "orientation": orientation,
+                "eq_modification": eq_modification,
+                "bounding_box": bbox,
+                "polygon": polygon
+            }
+            records.append(record)
 
-    # encode annotated image
-    buf = io.BytesIO()
-    annotated.convert("RGB").save(buf, format="PNG")
-    out_b64 = base64.b64encode(buf.getvalue()).decode("utf8")
-
-    return {"output": {"annotated_base64": out_b64}}
+    # wrap in top-level object
+    return [{
+        "image_name": image_name,
+        "predictions": records,
+        "structure_type": struct_type
+    }]

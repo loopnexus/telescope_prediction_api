@@ -1,16 +1,22 @@
+# test_local.py
 import base64
-from rp_handler import handler
+import json
+from pathlib import Path
+from rp_handler_image import handler
 
-# load your image
-with open("test_data/TUA2618_2.JPG","rb") as f:
+# 1. load your image
+img_path = Path(r"C:\Dev\telescope_prediction_api\test_data\TUA2618_2.JPG")
+with open(img_path, "rb") as f:
     raw = f.read()
 
-# call handler
-event = {"input":{"image_base64": base64.b64encode(raw).decode()}}
+# 2. wrap & call your handler
+event = {
+    "input": {
+        "image_base64": base64.b64encode(raw).decode("utf8"),
+        "image_name": img_path.name
+    }
+}
 resp = handler(event)
 
-# save annotated output
-ann_b64 = resp["output"]["annotated_base64"]
-with open("annotated.png","wb") as out:
-    out.write(base64.b64decode(ann_b64))
-print("✅ annotated.png written")
+# 3. pretty-print the JSON output
+print(json.dumps(resp, indent=2))
