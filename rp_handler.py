@@ -1,18 +1,15 @@
-# rp_handler.py
-
 import base64
 import io
 import os
-import sys                  # ← make sure sys is imported
-import glob
+import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from ultralytics import YOLO
 
 # ─── locate your weights ─────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent
+BASE_DIR = Path(__file__).parent
 WEIGHTS_DIR = BASE_DIR / "weights"
 
 # gather all .pt files in weights/
@@ -24,7 +21,6 @@ if not weight_files:
 env = os.environ.get("MODEL_PATH")
 if env:
     candidate = Path(env)
-    # if it's not an absolute path, look in weights/
     if not candidate.is_file():
         candidate = WEIGHTS_DIR / env
     if not candidate.is_file():
@@ -33,57 +29,79 @@ if env:
 else:
     MODEL_PATH = weight_files[-1]
 
-# ←—————— ADD THESE TWO LINES RIGHT HERE ——————→
-print(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
+# debug logs\ nprint(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
 print(f"🔔 Contents of weights/: {list(WEIGHTS_DIR.iterdir())}", file=sys.stderr, flush=True)
-# ←———————————————————————————————————————————————→
-
 print(f"🔔 Loading YOLO weights from: {MODEL_PATH}", file=sys.stderr, flush=True)
+
+# load model
 model = YOLO(str(MODEL_PATH))
-# ─────────────────────────────────────────────────────────────────────────────
+
+# load font if available
+try:
+    FONT = ImageFont.load_default()
+except Exception:
+    FONT = None
+
 
 def handler(event: dict) -> dict:
     """
     RunPod entrypoint.
     In:  {"input": {"image_base64": "..."}}
-    Out: {"output": {"mask_base64": "..."}}
+    Out: {"output": {"annotated_base64": "..."}}
     """
     inp = event.get("input", {})
     b64 = inp.get("image_base64")
     if not b64:
         return {"error": "No image_base64 provided"}
 
-    # 1) decode upload
+    # decode and open as PIL
     img_bytes = base64.b64decode(b64)
-
-    # 2) load as PIL, convert to RGB
     pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-
-    # 3) turn into numpy array (H × W × C)
     arr = np.array(pil)
 
-    # 4) run segmentation on the numpy array
+    # run inference
     results = model.predict(
         source=arr,
         conf=0.4,
         save=False,
         verbose=False
     )
-
-    # 5) if no masks, produce blank mask; else take first mask
     res = results[0]
-    if res.masks is None or len(res.masks.data) == 0:
-        h, w, _ = arr.shape
-        mask_arr = np.zeros((h, w), dtype="uint8")
-    else:
-        mask_arr = (res.masks.data[0].cpu().numpy() * 255).astype("uint8")
 
-    # 6) build PIL image from mask array
-    mask_img = Image.fromarray(mask_arr)
+    # prepare mask overlay
+    mask_overlay = Image.new("RGBA", pil.size, (0,0,0,0))
+    for mask in (res.masks.data if res.masks else []):
+        mask_np = (mask.cpu().numpy() * 255).astype("uint8")
+        mask_img = Image.fromarray(mask_np, mode="L")
+        colored_mask = Image.new("RGBA", pil.size, (255,0,0,100))
+        mask_overlay = Image.composite(colored_mask, mask_overlay, mask_img)
 
-    # 7) encode mask to PNG base64
+    # composite masks onto original
+    annotated = pil.convert("RGBA")
+    annotated = Image.alpha_composite(annotated, mask_overlay)
+
+    # draw boxes and labels
+    draw = ImageDraw.Draw(annotated)
+    for i, bbox in enumerate(res.boxes.xyxy if res.boxes else []):
+        x1, y1, x2, y2 = map(int, bbox.cpu().numpy())
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
+        cls = int(res.boxes.cls[i].cpu().numpy())
+        conf = float(res.boxes.conf[i].cpu().numpy())
+        label = f"{model.names[cls]} {conf:.2f}"
+        if FONT:
+            text_size = draw.textsize(label, font=FONT)
+        else:
+            text_size = (len(label)*6, 11)
+        # background for text
+        draw.rectangle(
+            [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1],
+            fill="red"
+        )
+        draw.text((x1 + 2, y1 - text_size[1] - 2), label, fill="white", font=FONT)
+
+    # encode annotated image
     buf = io.BytesIO()
-    mask_img.save(buf, format="PNG")
+    annotated.convert("RGB").save(buf, format="PNG")
     out_b64 = base64.b64encode(buf.getvalue()).decode("utf8")
 
-    return {"output": {"mask_base64": out_b64}}
+    return {"output": {"annotated_base64": out_b64}}
