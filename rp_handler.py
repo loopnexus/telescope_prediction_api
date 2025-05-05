@@ -38,7 +38,7 @@ def handler(event: dict):
     """
     RunPod entrypoint.
     In:  {"input": {"image_base64": "...", "image_name": "..."}}
-    Out: JSON array matching schema
+    Out: JSON array matching schema, including predictions_count
     """
     inp = event.get("input", {})
     b64 = inp.get("image_base64")
@@ -83,11 +83,9 @@ def handler(event: dict):
             polygon = []
             if res.masks and i < len(res.masks.data):
                 mask_np = (res.masks.data[i].cpu().numpy() * 255).astype(np.uint8)
-                # threshold
                 _, thresh = cv2.threshold(mask_np, 127, 255, cv2.THRESH_BINARY)
                 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if contours:
-                    # take largest
                     contour = max(contours, key=lambda c: cv2.contourArea(c))
                     polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in contour]
 
@@ -104,9 +102,11 @@ def handler(event: dict):
             }
             records.append(record)
 
-    # wrap in top-level object
-    return [{
+    # wrap in top-level object and add predictions_count
+    output = {
         "image_name": image_name,
+        "predictions_count": len(records),
         "predictions": records,
         "structure_type": struct_type
-    }]
+    }
+    return [output]
