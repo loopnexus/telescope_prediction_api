@@ -32,6 +32,13 @@ if env:
 else:
     MODEL_PATH = weight_files[-1]
 
+
+# ←—————— ADD THESE TWO LINES RIGHT HERE ——————→
+print(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
+print(f"🔔 Contents of weights/: {list(WEIGHTS_DIR.iterdir())}", file=sys.stderr, flush=True)
+# ←———————————————————————————————————————————————→
+
+
 print(f"🔔 Loading YOLO weights from: {MODEL_PATH}")
 model = YOLO(str(MODEL_PATH))
 # ─────────────────────────────────────────────────────────────────────────────
