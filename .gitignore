@@ -4,3 +4,12 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+
+# ignore local test‐data and results
+predictions/
+test_data/
+
+# ignore local weights and test scripts
+yolov8n-seg.pt
+test_local.py
+test_weights_local.py
