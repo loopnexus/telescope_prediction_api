@@ -91,16 +91,21 @@ def handler(event: dict) -> dict:
         cls = int(res.boxes.cls[i].cpu().numpy())
         conf = float(res.boxes.conf[i].cpu().numpy())
         label = f"{model.names[cls]} {conf:.2f}"
+
         # measure text size
         if FONT:
-            text_size = draw.textsize(label, font=FONT)
+            # use font.getsize or textbbox
+            try:
+                text_size = FONT.getsize(label)
+            except AttributeError:
+                bbox0 = draw.textbbox((0, 0), label, font=FONT)
+                text_size = (bbox0[2] - bbox0[0], bbox0[3] - bbox0[1])
         else:
             text_size = (len(label) * 6, 11)
-        # background for text
-        draw.rectangle(
-            [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1],
-            fill="red"
-        )
+
+        # draw background rectangle for text
+        text_bg = [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1]
+        draw.rectangle(text_bg, fill="red")
         draw.text((x1 + 2, y1 - text_size[1] - 2), label, fill="white", font=FONT)
 
     # encode annotated image
