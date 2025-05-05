@@ -17,27 +17,23 @@ weight_files = sorted(WEIGHTS_DIR.glob("*.pt"))
 if not weight_files:
     raise RuntimeError(f"No .pt weights found in {WEIGHTS_DIR}")
 
-# allow overriding via env var, else pick the last one
-env = os.environ.get("MODEL_PATH")
-if env:
-    candidate = Path(env)
-    if not candidate.is_file():
-        candidate = WEIGHTS_DIR / env
-    if not candidate.is_file():
-        raise RuntimeError(f"MODEL_PATH env var set to '{env}', but file not found")
-    MODEL_PATH = candidate
-else:
-    MODEL_PATH = weight_files[-1]
+# Load a YOLO model for each weight file, assign a unique color
+MODELS = []
+# A simple palette of RGBA colors (semi-transparent)
+PALETTE = [
+    (255, 0, 0, 100),    # red
+    (0, 255, 0, 100),    # green
+    (0, 0, 255, 100),    # blue
+    (255, 255, 0, 100),  # yellow
+    (255, 0, 255, 100),  # magenta
+    (0, 255, 255, 100),  # cyan
+]
+for idx, wfile in enumerate(weight_files):
+    color = PALETTE[idx % len(PALETTE)]
+    print(f"🔔 Loading YOLO weights from: {wfile}", file=sys.stderr, flush=True)
+    MODELS.append((wfile.stem, YOLO(str(wfile)), color))
 
-# debug logs
-print(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
-print(f"🔔 Contents of weights/: {list(WEIGHTS_DIR.iterdir())}", file=sys.stderr, flush=True)
-print(f"🔔 Loading YOLO weights from: {MODEL_PATH}", file=sys.stderr, flush=True)
-
-# load model
-model = YOLO(str(MODEL_PATH))
-
-# load font if available
+# load default font
 try:
     FONT = ImageFont.load_default()
 except Exception:
@@ -60,53 +56,55 @@ def handler(event: dict) -> dict:
     pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     arr = np.array(pil)
 
-    # run inference
-    results = model.predict(
-        source=arr,
-        conf=0.4,
-        save=False,
-        verbose=False
-    )
-    res = results[0]
+    # Prepare overlay canvas
+    overlay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-    # prepare mask overlay
-    mask_overlay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
-    for mask in (res.masks.data if res.masks else []):
-        mask_np = (mask.cpu().numpy() * 255).astype("uint8")
-        # ensure mask matches image size
-        mask_img = Image.fromarray(mask_np, mode="L").resize(pil.size)
+    # Iterate over each model and its color
+    for name, model, color in MODELS:
+        results = model.predict(
+            source=arr,
+            conf=0.4,
+            save=False,
+            verbose=False
+        )
+        res = results[0]
 
-        colored_mask = Image.new("RGBA", pil.size, (255, 0, 0, 100))
-        mask_overlay = Image.composite(colored_mask, mask_overlay, mask_img)
+        # masks
+        if res.masks:
+            for mask in res.masks.data:
+                mask_np = (mask.cpu().numpy() * 255).astype("uint8")
+                mask_img = Image.fromarray(mask_np, mode="L").resize(pil.size)
+                colored = Image.new("RGBA", pil.size, color)
+                overlay = Image.composite(colored, overlay, mask_img)
 
-    # composite masks onto original
-    annotated = pil.convert("RGBA")
-    annotated = Image.alpha_composite(annotated, mask_overlay)
+        # boxes + labels
+        if res.boxes:
+            for i, bbox in enumerate(res.boxes.xyxy):
+                x1, y1, x2, y2 = map(int, bbox.cpu().numpy())
+                # draw box
+                draw.rectangle([x1, y1, x2, y2], outline=color[:3], width=2)
+                cls = int(res.boxes.cls[i].cpu().numpy())
+                conf = float(res.boxes.conf[i].cpu().numpy())
+                label = f"{name}:{model.names[cls]} {conf:.2f}"
 
-    # draw boxes and labels
-    draw = ImageDraw.Draw(annotated)
-    for i, bbox in enumerate(res.boxes.xyxy if res.boxes else []):
-        x1, y1, x2, y2 = map(int, bbox.cpu().numpy())
-        draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
-        cls = int(res.boxes.cls[i].cpu().numpy())
-        conf = float(res.boxes.conf[i].cpu().numpy())
-        label = f"{model.names[cls]} {conf:.2f}"
+                # measure text size
+                if FONT:
+                    try:
+                        text_size = FONT.getsize(label)
+                    except Exception:
+                        bbox0 = draw.textbbox((0, 0), label, font=FONT)
+                        text_size = (bbox0[2] - bbox0[0], bbox0[3] - bbox0[1])
+                else:
+                    text_size = (len(label) * 6, 11)
 
-        # measure text size
-        if FONT:
-            # use font.getsize or textbbox
-            try:
-                text_size = FONT.getsize(label)
-            except AttributeError:
-                bbox0 = draw.textbbox((0, 0), label, font=FONT)
-                text_size = (bbox0[2] - bbox0[0], bbox0[3] - bbox0[1])
-        else:
-            text_size = (len(label) * 6, 11)
+                # text background
+                bg = [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1]
+                draw.rectangle(bg, fill=color[:3] + (200,))
+                draw.text((x1 + 2, y1 - text_size[1] - 2), label, fill=(255,255,255,255), font=FONT)
 
-        # draw background rectangle for text
-        text_bg = [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1]
-        draw.rectangle(text_bg, fill="red")
-        draw.text((x1 + 2, y1 - text_size[1] - 2), label, fill="white", font=FONT)
+    # Composite overlay onto original
+    annotated = Image.alpha_composite(pil.convert("RGBA"), overlay)
 
     # encode annotated image
     buf = io.BytesIO()
