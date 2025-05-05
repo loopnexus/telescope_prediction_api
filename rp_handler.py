@@ -1,7 +1,11 @@
+# rp_handler.py
+
 import base64
 import io
 import os
+
 from PIL import Image
+import numpy as np
 from ultralytics import YOLO
 
 # on cold start this will download the model if not already cached
@@ -19,20 +23,28 @@ def handler(event: dict) -> dict:
     if not b64:
         return {"error": "No image_base64 provided"}
 
-    # decode upload
+    # 1) decode upload
     img_bytes = base64.b64decode(b64)
-    # run segmentation
+
+    # 2) load as PIL, convert to RGB
+    pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    # 3) turn into numpy array (H x W x C)
+    arr = np.array(pil)
+
+    # 4) run segmentation on the numpy array
     results = model.predict(
-        source=io.BytesIO(img_bytes),
+        source=arr,
         conf=0.4,
         save=False,
         verbose=False
     )
-    # take first mask
+
+    # 5) extract the first mask, scale to 0–255, and build a PIL image
     mask_arr = (results[0].masks.data[0].cpu().numpy() * 255).astype("uint8")
     mask_img = Image.fromarray(mask_arr)
 
-    # encode mask to PNG base64
+    # 6) encode mask to PNG base64
     buf = io.BytesIO()
     mask_img.save(buf, format="PNG")
     out_b64 = base64.b64encode(buf.getvalue()).decode("utf8")
