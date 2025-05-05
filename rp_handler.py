@@ -29,7 +29,8 @@ if env:
 else:
     MODEL_PATH = weight_files[-1]
 
-# debug logs\ nprint(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
+# debug logs
+print(f"🔔 MODEL_PATH resolved to: {MODEL_PATH}", file=sys.stderr, flush=True)
 print(f"🔔 Contents of weights/: {list(WEIGHTS_DIR.iterdir())}", file=sys.stderr, flush=True)
 print(f"🔔 Loading YOLO weights from: {MODEL_PATH}", file=sys.stderr, flush=True)
 
@@ -69,11 +70,13 @@ def handler(event: dict) -> dict:
     res = results[0]
 
     # prepare mask overlay
-    mask_overlay = Image.new("RGBA", pil.size, (0,0,0,0))
+    mask_overlay = Image.new("RGBA", pil.size, (0, 0, 0, 0))
     for mask in (res.masks.data if res.masks else []):
         mask_np = (mask.cpu().numpy() * 255).astype("uint8")
-        mask_img = Image.fromarray(mask_np, mode="L")
-        colored_mask = Image.new("RGBA", pil.size, (255,0,0,100))
+        # ensure mask matches image size
+        mask_img = Image.fromarray(mask_np, mode="L").resize(pil.size)
+
+        colored_mask = Image.new("RGBA", pil.size, (255, 0, 0, 100))
         mask_overlay = Image.composite(colored_mask, mask_overlay, mask_img)
 
     # composite masks onto original
@@ -88,10 +91,11 @@ def handler(event: dict) -> dict:
         cls = int(res.boxes.cls[i].cpu().numpy())
         conf = float(res.boxes.conf[i].cpu().numpy())
         label = f"{model.names[cls]} {conf:.2f}"
+        # measure text size
         if FONT:
             text_size = draw.textsize(label, font=FONT)
         else:
-            text_size = (len(label)*6, 11)
+            text_size = (len(label) * 6, 11)
         # background for text
         draw.rectangle(
             [x1, y1 - text_size[1] - 4, x1 + text_size[0] + 4, y1],
