@@ -19,3 +19,5 @@ RUN echo "---- weights folder contents ----" \
 
 # 6) Entrypoint: start the RunPod serverless worker
 CMD ["python", "-u", "-c", "import rp_handler, runpod; runpod.serverless.start({'handler': rp_handler.handler})"]
+
+ENV RUNPOD_ENTRYPOINT=rp_handler_wrapper

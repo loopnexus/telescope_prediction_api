@@ -7,7 +7,7 @@ from rp_handler import handler  # your new handler module
 
 def main():
     # 1. load your image
-    img_path = Path(r"C:\Dev\telescope_prediction_api\test_data\TUA2618_2.JPG")
+    img_path = Path(r"E:\github\rp_handler\telescope_prediction_api\test_data\TUA2618_2.JPG")
     with open(img_path, "rb") as f:
         raw = f.read()
 
@@ -18,6 +18,11 @@ def main():
             "image_name": img_path.name
         }
     }
+    input_debug_path = Path(r"C:\Dev\telescope_prediction_api\output\event_input.txt")
+    input_debug_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(input_debug_path, "w", encoding="utf8") as f:
+        f.write(json.dumps(event["input"], indent=2))
+    print(f"📥 Event input saved to {input_debug_path}")
     resp = handler(event)
 
     # 3. save the JSON output to file in 'output' directory
