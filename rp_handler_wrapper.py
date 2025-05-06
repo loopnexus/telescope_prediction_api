@@ -1,8 +1,16 @@
-from rp_handler import handler as real_handler
+"""RunPod-compatible handler wrapper."""
 
-print("[DEBUG] Wrapper module loaded.")
+import runpod
+from rp_handler import handler as real_handler  # Import the actual client handler
 
+# Wrapper handler to conform to RunPod's serverless signature
+def handler(job):
+    print("[DEBUG] RunPod job received with keys:", list(job.keys()))
+    
+    job_input = job.get("input", {})
+    print("[DEBUG] job['input'] keys:", list(job_input.keys()))
+    
+    return real_handler({"input": job_input})
 
-def handler(event):
-    print("[DEBUG] Wrapper handler invoked")
-    return real_handler(event)
+# Start the RunPod serverless worker
+runpod.serverless.start({"handler": handler})

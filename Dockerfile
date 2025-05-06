@@ -1,19 +1,17 @@
-FROM python:3.10-slim
+FROM runpod/base:0.6.3-cuda11.8.0
+
+RUN ln -sf $(which python3.11) /usr/local/bin/python && \
+    ln -sf $(which python3.11) /usr/local/bin/python3
+
+COPY requirements.txt /requirements.txt
+RUN uv pip install --upgrade -r /requirements.txt --no-cache-dir --system
+
+COPY rp_handler.py /app/rp_handler.py
+COPY rp_handler_wrapper.py /app/handler.py      
+COPY weights/ /app/weights/
 
 WORKDIR /app
 
-# Install dependencies and RunPod CLI
-COPY requirements.txt .
-RUN pip install --no-cache-dir runpod && \
-    pip install --no-cache-dir -r requirements.txt
+RUN echo "---- weights folder contents ----" && ls -R /app/weights && echo "----------------"
 
-# Copy Python code
-COPY rp_handler.py .
-COPY rp_handler_wrapper.py .
-COPY weights/ ./weights/
-
-# Debug weights folder
-RUN echo "---- weights folder contents ----" && ls -R /app/weights && echo "---------------------"
-
-# Correct entrypoint
-CMD ["python", "-u", "-c", "import rp_handler_wrapper, runpod; runpod.serverless.start({'handler': rp_handler_wrapper.handler})"]
+CMD ["python", "-u", "handler.py"]
