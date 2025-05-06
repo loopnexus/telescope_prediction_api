@@ -16,5 +16,4 @@ COPY weights/ ./weights/
 RUN echo "---- weights folder contents ----" && ls -R /app/weights && echo "---------------------"
 
 # Correct entrypoint
-ENV RUNPOD_ENTRYPOINT=rp_handler_wrapper
-CMD ["runpod", "start"]
+CMD ["python", "-u", "-c", "import rp_handler_wrapper, runpod; runpod.serverless.start({'handler': rp_handler_wrapper.handler})"]
