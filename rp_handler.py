@@ -9,6 +9,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from ultralytics import YOLO
+import runpod
 
 # ─── locate your weights ─────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -110,3 +111,5 @@ def handler(event: dict):
         "structure_type": struct_type
     }
     return [output]
+
+runpod.serverless.start({"handler": handler})
