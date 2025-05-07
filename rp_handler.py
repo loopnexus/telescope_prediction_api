@@ -3,7 +3,9 @@ import sys
 import io
 import uuid
 import base64
+import logging
 from pathlib import Path
+from typing import Dict, List, Any, Optional
 
 import numpy as np
 import cv2
@@ -11,56 +13,68 @@ from PIL import Image
 from ultralytics import YOLO
 import runpod
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stderr
+)
+logger = logging.getLogger(__name__)
+
 # ─── locate your weights ─────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 WEIGHTS_DIR = BASE_DIR / "weights"
 
-# gather all .pt files in weights/
-weight_files = sorted(WEIGHTS_DIR.glob("*.pt"))
-if not weight_files:
-    raise RuntimeError(f"No .pt weights found in {WEIGHTS_DIR}")
+def load_models() -> List[tuple]:
+    """Load all YOLO models from weights directory."""
+    weight_files = sorted(WEIGHTS_DIR.glob("*.pt"))
+    if not weight_files:
+        raise RuntimeError(f"No .pt weights found in {WEIGHTS_DIR}")
+    
+    models = []
+    for wfile in weight_files:
+        model_name = wfile.stem
+        logger.info(f"Loading YOLO weights from: {wfile}")
+        try:
+            model = YOLO(str(wfile))
+            models.append((model_name, model))
+        except Exception as e:
+            logger.error(f"Failed to load model {model_name}: {str(e)}")
+            raise
+    return models
 
-# Load a YOLO model for each weight file
-each_model = []
-for wfile in weight_files:
-    model_name = wfile.stem
-    print(f"🔔 Loading YOLO weights from: {wfile}", file=sys.stderr, flush=True)
-    each_model.append((model_name, YOLO(str(wfile))))
+# Load models at startup
+try:
+    each_model = load_models()
+    logger.info(f"Successfully loaded {len(each_model)} models")
+except Exception as e:
+    logger.error(f"Failed to load models: {str(e)}")
+    raise
 
-# Optionally allow external override of structure type
-def _get_structure_type():
+def _get_structure_type() -> int:
+    """Get structure type from environment variable."""
     try:
         return int(os.environ.get("STRUCTURE_TYPE", 1))
     except ValueError:
+        logger.warning("Invalid STRUCTURE_TYPE, defaulting to 1")
         return 1
 
+def process_image(image_data: bytes) -> np.ndarray:
+    """Process image data into numpy array."""
+    try:
+        pil = Image.open(io.BytesIO(image_data)).convert("RGB")
+        return np.array(pil)
+    except Exception as e:
+        logger.error(f"Failed to process image: {str(e)}")
+        raise
 
-def handler(event: dict):
-    """
-    RunPod entrypoint.
-    In:  {"input": {"image_base64": "...", "image_name": "..."}}
-    Out: JSON array matching schema, including predictions_count
-    """
-    inp = event.get("input", {})
-    b64 = inp.get("image_base64")
-    image_name = inp.get("image_name", "")
-    if not b64:
-        return {"error": "No image_base64 provided"}
-
-    # decode and load image
-    img_bytes = base64.b64decode(b64)
-    pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    arr = np.array(pil)
-
+def process_detection(model_name: str, model: YOLO, arr: np.ndarray) -> List[Dict[str, Any]]:
+    """Process detections for a single model."""
     records = []
-    struct_type = _get_structure_type()
-
-    # run each model
-    for model_name, model in each_model:
+    try:
         results = model.predict(source=arr, conf=0.4, save=False, verbose=False)
         res = results[0]
 
-        # iterate detections
         for i, box in enumerate(res.boxes.xyxy):
             # parse bbox
             x1, y1, x2, y2 = map(int, box.cpu().numpy())
@@ -102,14 +116,48 @@ def handler(event: dict):
                 "polygon": polygon
             }
             records.append(record)
+    except Exception as e:
+        logger.error(f"Error processing detections for model {model_name}: {str(e)}")
+        raise
+    return records
 
-    # wrap in top-level object and add predictions_count
-    output = {
-        "image_name": image_name,
-        "predictions_count": len(records),
-        "predictions": records,
-        "structure_type": struct_type
-    }
-    return [output]
+def handler(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    RunPod entrypoint.
+    In:  {"input": {"image_base64": "...", "image_name": "..."}}
+    Out: JSON array matching schema, including predictions_count
+    """
+    try:
+        inp = event.get("input", {})
+        b64 = inp.get("image_base64")
+        image_name = inp.get("image_name", "")
+        
+        if not b64:
+            return {"error": "No image_base64 provided"}
 
-runpod.serverless.start({"handler": handler})
+        # decode and load image
+        img_bytes = base64.b64decode(b64)
+        arr = process_image(img_bytes)
+
+        records = []
+        struct_type = _get_structure_type()
+
+        # run each model
+        for model_name, model in each_model:
+            model_records = process_detection(model_name, model, arr)
+            records.extend(model_records)
+
+        # wrap in top-level object and add predictions_count
+        output = {
+            "image_name": image_name,
+            "predictions_count": len(records),
+            "predictions": records,
+            "structure_type": struct_type
+        }
+        return [output]
+    except Exception as e:
+        logger.error(f"Handler error: {str(e)}")
+        return {"error": str(e)}
+
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
